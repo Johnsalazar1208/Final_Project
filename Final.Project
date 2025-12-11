@@ -1,0 +1,259 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import sqlite3
+from datetime import datetime
+
+DB_NAME = "study_sessions.db"
+
+# =============================
+# Database helper functions
+# =============================
+
+def init_db():
+    """
+    Create the database and table if they don't exist.
+    This function is called when the app starts.
+    """
+    with sqlite3.connect(DB_NAME) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subject TEXT NOT NULL,
+                minutes INTEGER NOT NULL,
+                notes TEXT,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.commit()
+
+def insert_session(subject, minutes, notes):
+    """
+    Custom function: insert one study session into the database.
+    This is our main custom function that the app calls.
+    """
+    with sqlite3.connect(DB_NAME) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO sessions (subject, minutes, notes, created_at) VALUES (?, ?, ?, ?)",
+            (subject, minutes, notes, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+
+def fetch_sessions(limit=50):
+    """
+    Fetch the most recent study sessions from the database.
+    Returns a list of rows: (subject, minutes, notes, created_at)
+    """
+    with sqlite3.connect(DB_NAME) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT subject, minutes, notes, created_at "
+            "FROM sessions ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = cur.fetchall()
+    return rows
+
+def total_minutes_today():
+    """
+    Return the total number of minutes studied today.
+    """
+    with sqlite3.connect(DB_NAME) as conn:
+        cur = conn.cursor()
+        today = datetime.now().date().isoformat()  # YYYY-MM-DD
+        cur.execute(
+            "SELECT COALESCE(SUM(minutes), 0) FROM sessions "
+            "WHERE substr(created_at, 1, 10) = ?",
+            (today,),
+        )
+        total = cur.fetchone()[0] or 0
+    return total
+
+# =============================
+# GUI Application class
+# =============================
+
+class StudyTrackerApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Study Session Tracker")
+        self.geometry("650x450")
+        self.resizable(False, False)
+
+        # Make sure the DB is ready
+        init_db()
+
+        # Build UI
+        self._build_menu()
+        self._build_main_ui()
+
+        # Bind Enter key to add session for convenience
+        self.bind("<Return>", lambda event: self.add_session_clicked())
+
+        # Load initial data
+        self.refresh_sessions()
+
+    # ---------- Menu ----------
+
+    def _build_menu(self):
+        menubar = tk.Menu(self)
+
+        file_menu = tk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label="Refresh", command=self.refresh_sessions)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.quit)
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        help_menu = tk.Menu(menubar, tearoff=False)
+        help_menu.add_command(label="About", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+
+        self.config(menu=menubar)
+
+    def _show_about(self):
+        messagebox.showinfo(
+            "About",
+            "Study Session Tracker\n\n"
+            "Log what you studied and for how long,\n"
+            "then keep track of your total study time.\n\n"
+            "Data is stored in a local SQLite database."
+        )
+
+    # ---------- Main UI ----------
+
+    def _build_main_ui(self):
+        # Top frame – form fields
+        top_frame = ttk.LabelFrame(self, text="Log a study session")
+        top_frame.pack(fill="x", padx=10, pady=10)
+
+        # Subject
+        ttk.Label(top_frame, text="Subject:").grid(
+            row=0, column=0, padx=5, pady=5, sticky="e"
+        )
+        self.subject_var = tk.StringVar()
+        self.subject_combo = ttk.Combobox(
+            top_frame,
+            textvariable=self.subject_var,
+            values=["Networking", "Security", "Python", "Math", "Other"],
+            state="normal",
+        )
+        self.subject_combo.grid(row=0, column=1, padx=5, pady=5, sticky="we")
+        self.subject_combo.set("Networking")
+
+        # Minutes
+        ttk.Label(top_frame, text="Minutes:").grid(
+            row=0, column=2, padx=5, pady=5, sticky="e"
+        )
+        self.minutes_var = tk.StringVar()
+        self.minutes_entry = ttk.Entry(top_frame, textvariable=self.minutes_var, width=10)
+        self.minutes_entry.grid(row=0, column=3, padx=5, pady=5, sticky="w")
+        self.minutes_entry.focus_set()
+
+        # Notes
+        ttk.Label(top_frame, text="Notes:").grid(
+            row=1, column=0, padx=5, pady=5, sticky="ne"
+        )
+        self.notes_text = tk.Text(top_frame, height=3, width=50)
+        self.notes_text.grid(
+            row=1, column=1, columnspan=3, padx=5, pady=5, sticky="we"
+        )
+
+        # Button
+        add_button = ttk.Button(top_frame, text="Add Session", command=self.add_session_clicked)
+        add_button.grid(row=2, column=3, padx=5, pady=8, sticky="e")
+
+        # Make columns expand nicely
+        for i in range(4):
+            top_frame.columnconfigure(i, weight=1)
+
+        # Bottom frame – table of sessions
+        bottom_frame = ttk.LabelFrame(self, text="Recent sessions")
+        bottom_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        columns = ("subject", "minutes", "notes", "created_at")
+        self.tree = ttk.Treeview(bottom_frame, columns=columns, show="headings", height=10)
+        self.tree.heading("subject", text="Subject")
+        self.tree.heading("minutes", text="Minutes")
+        self.tree.heading("notes", text="Notes")
+        self.tree.heading("created_at", text="Date/Time")
+
+        self.tree.column("subject", width=120)
+        self.tree.column("minutes", width=70, anchor="center")
+        self.tree.column("notes", width=260)
+        self.tree.column("created_at", width=160)
+
+        self.tree.pack(fill="both", expand=True, side="left", padx=(5, 0), pady=5)
+
+        scrollbar = ttk.Scrollbar(bottom_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y", padx=(0, 5), pady=5)
+
+        # Status bar area
+        status_frame = ttk.Frame(self)
+        status_frame.pack(fill="x", padx=10, pady=(0, 10))
+        self.total_label = ttk.Label(status_frame, text="Total minutes today: 0")
+        self.total_label.pack(side="left")
+
+    # ---------- Button / actions ----------
+
+    def add_session_clicked(self):
+        """
+        Handle the Add Session button click.
+        Uses user input from the GUI and calls our custom function insert_session.
+        """
+        subject = self.subject_var.get().strip() or "Other"
+        minutes_str = self.minutes_var.get().strip()
+        notes = self.notes_text.get("1.0", "end").strip()
+
+        # Simple validation
+        if not minutes_str.isdigit() or int(minutes_str) <= 0:
+            messagebox.showerror("Invalid minutes", "Please enter a positive number of minutes.")
+            return
+
+        minutes = int(minutes_str)
+
+        # Call our custom function to save to DB
+        try:
+            insert_session(subject, minutes, notes)
+        except Exception as e:
+            messagebox.showerror("Database error", f"Could not save session:\n{e}")
+            return
+
+        # Clear fields
+        self.minutes_var.set("")
+        self.notes_text.delete("1.0", "end")
+
+        # Refresh display
+        self.refresh_sessions()
+
+    def refresh_sessions(self):
+        """
+        Reload the table from the database and update today's total.
+        """
+        # Clear the tree
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+
+        # Insert rows
+        for subject, minutes, notes, created_at in fetch_sessions():
+            display_notes = (notes[:40] + "…") if notes and len(notes) > 40 else notes
+            self.tree.insert("", "end", values=(subject, minutes, display_notes, created_at))
+
+        # Update total minutes label
+        try:
+            total = total_minutes_today()
+        except Exception:
+            total = 0
+        self.total_label.config(text=f"Total minutes today: {total}")
+
+# =============================
+# Run the app
+# =============================
+
+if __name__ == "__main__":
+    init_db()
+    app = StudyTrackerApp()
+    app.mainloop()
